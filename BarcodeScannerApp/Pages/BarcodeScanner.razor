@@ -1,93 +1,204 @@
 ﻿@page "/barcode-scanner"
+@using Microsoft.AspNetCore.Components.Web
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
 <h3>Barcode Scanner</h3>
 
-<button class="btn btn-primary" @onclick="OpenScanner">
-    Barcode Scan
-</button>
+<div class="mb-4">
+    <h5>Hardware Scanner</h5>
 
-@if (isScannerOpen)
+    <p class="text-muted">
+        Click in this box, then scan using your USB/Bluetooth scanner.
+    </p>
+
+    <input id="hardwareBarcodeInput"
+           class="form-control"
+           placeholder="Hardware scanner input"
+           @bind="hardwareBarcode"
+           @bind:event="oninput"
+           @onkeydown="HardwareScannerKeyDown" />
+</div>
+
+<div class="mb-3">
+    <button class="btn btn-primary me-2" @onclick="OpenCameraAsync">
+        Open Phone Camera Scanner
+    </button>
+
+    <button class="btn btn-outline-secondary" @onclick="FocusHardwareInputAsync">
+        Focus Hardware Scanner
+    </button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(message))
+{
+    <div class="alert alert-info">@message</div>
+}
+
+@if (isCameraOpen)
 {
     <div class="scanner-overlay">
         <div class="scanner-popup">
-            <h4>Scan a barcode</h4>
+            <h4>Camera Barcode Scanner</h4>
 
-            @* <video id="barcodeVideo" autoplay playsinline></video> *@
-            <div id="barcodeVideo"></div>
+            <p class="text-muted">
+                Keep the barcode inside the scan box until it is accepted.
+            </p>
+
+            <div id="barcodeCamera"></div>
 
             <div class="mt-3">
-                <button class="btn btn-warning me-2" @onclick="StopScanner">
-                    Stop
+                <button class="btn btn-warning me-2" @onclick="StopCameraAsync">
+                    Stop Camera
                 </button>
 
-                <button class="btn btn-secondary" @onclick="CloseScanner">
+                <button class="btn btn-secondary" @onclick="CloseCameraAsync">
                     Close
                 </button>
             </div>
-
-            <hr />
-
-            <h5>Scanned barcodes</h5>
-
-            @if (scannedBarcodes.Count == 0)
-            {
-                <p>No barcode scanned yet.</p>
-            }
-            else
-            {
-                <ul>
-                    @foreach (var barcode in scannedBarcodes)
-                    {
-                        <li>@barcode</li>
-                    }
-                </ul>
-            }
         </div>
     </div>
 }
 
-@code {
-    private bool isScannerOpen;
-    private DotNetObjectReference<BarcodeScanner>? dotNetReference;
-    private List<string> scannedBarcodes = new();
+<hr />
 
-    private async Task OpenScanner()
+<h4>Scanned Products</h4>
+
+@if (scannedItems.Count == 0)
+{
+    <p>No barcode scanned yet.</p>
+}
+else
+{
+    <table class="table table-bordered">
+        <thead>
+            <tr>
+                <th>Barcode</th>
+                <th>Quantity</th>
+                <th>Last Scan Time</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in scannedItems)
+            {
+                <tr>
+                    <td>@item.Barcode</td>
+                    <td>@item.Quantity</td>
+                    <td>@item.LastScanTime.ToString("HH:mm:ss")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private bool isCameraOpen;
+    private string hardwareBarcode = "";
+    private string message = "";
+    private DotNetObjectReference<BarcodeScanner>? dotNetReference;
+
+    private List<ScannedItem> scannedItems = new();
+
+    private async Task OpenCameraAsync()
     {
-        isScannerOpen = true;
-        dotNetReference = DotNetObjectReference.Create(this);
+        message = "";
+        isCameraOpen = true;
+
+        dotNetReference ??= DotNetObjectReference.Create(this);
 
         await Task.Delay(100);
         await JS.InvokeVoidAsync("barcodeScanner.start", dotNetReference);
     }
 
+    private async Task StopCameraAsync()
+    {
+        await JS.InvokeVoidAsync("barcodeScanner.stop");
+        message = "Camera stopped.";
+    }
+
+    private async Task CloseCameraAsync()
+    {
+        await JS.InvokeVoidAsync("barcodeScanner.stop");
+        isCameraOpen = false;
+    }
+
+    private async Task FocusHardwareInputAsync()
+    {
+        await JS.InvokeVoidAsync("barcodeScanner.focusHardwareInput");
+    }
+
+    private async Task HardwareScannerKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(hardwareBarcode))
+        {
+            await AddBarcodeAsync(hardwareBarcode);
+            hardwareBarcode = "";
+        }
+    }
+
     [JSInvokable]
     public Task BarcodeDetected(string barcode)
     {
-        if (!scannedBarcodes.Contains(barcode))
+        return AddBarcodeAsync(barcode);
+    }
+
+    [JSInvokable]
+    public Task ScannerError(string error)
+    {
+        message = $"Camera error: {error}";
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private Task AddBarcodeAsync(string barcode)
+    {
+        barcode = barcode.Trim();
+
+        if (string.IsNullOrWhiteSpace(barcode))
         {
-            scannedBarcodes.Insert(0, barcode);
-            StateHasChanged();
+            return Task.CompletedTask;
         }
+
+        var existingItem = scannedItems.FirstOrDefault(x => x.Barcode == barcode);
+
+        if (existingItem is null)
+        {
+            scannedItems.Insert(0, new ScannedItem
+            {
+                Barcode = barcode,
+                Quantity = 1,
+                LastScanTime = DateTime.Now
+            });
+        }
+        else
+        {
+            existingItem.Quantity++;
+            existingItem.LastScanTime = DateTime.Now;
+        }
+
+        message = $"Accepted barcode: {barcode}";
+        StateHasChanged();
 
         return Task.CompletedTask;
     }
 
-    private async Task StopScanner()
-    {
-        await JS.InvokeVoidAsync("barcodeScanner.stop");
-    }
-
-    private async Task CloseScanner()
-    {
-        await JS.InvokeVoidAsync("barcodeScanner.stop");
-        isScannerOpen = false;
-    }
-
     public async ValueTask DisposeAsync()
     {
-        await JS.InvokeVoidAsync("barcodeScanner.stop");
+        try
+        {
+            await JS.InvokeVoidAsync("barcodeScanner.stop");
+        }
+        catch
+        {
+        }
+
         dotNetReference?.Dispose();
+    }
+
+    private class ScannedItem
+    {
+        public string Barcode { get; set; } = "";
+        public int Quantity { get; set; }
+        public DateTime LastScanTime { get; set; }
     }
 }
