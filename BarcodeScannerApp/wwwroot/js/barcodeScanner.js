@@ -1,40 +1,61 @@
 ﻿let scanner = null;
-let lastValue = "";
+
+let candidateBarcode = "";
+let matchingReads = 0;
+let lastReadTime = 0;
+let lastAcceptedBarcode = "";
 
 window.barcodeScanner = {
     start: async function (dotNetHelper) {
-        const formats = [
-            Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.CODE_93,
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
-            Html5QrcodeSupportedFormats.ITF,
-            Html5QrcodeSupportedFormats.CODABAR
-        ];
-
         scanner = new Html5Qrcode("barcodeVideo", {
-            formatsToSupport: formats
+            formatsToSupport: [
+                Html5QrcodeSupportedFormats.CODE_128
+            ]
         });
 
         await scanner.start(
             { facingMode: "environment" },
             {
-                fps: 15,
+                fps: 12,
                 qrbox: { width: 350, height: 140 },
                 aspectRatio: 1.7778,
                 disableFlip: true
             },
             (decodedText) => {
-                if (decodedText !== lastValue) {
-                    lastValue = decodedText;
-                    dotNetHelper.invokeMethodAsync("BarcodeDetected", decodedText);
+                const now = Date.now();
+
+                // Already accepted this item. Don't add it repeatedly.
+                if (decodedText === lastAcceptedBarcode) {
+                    return;
+                }
+
+                // Require the same number three times within 750 milliseconds.
+                if (
+                    decodedText === candidateBarcode &&
+                    now - lastReadTime < 750
+                ) {
+                    matchingReads++;
+                } else {
+                    candidateBarcode = decodedText;
+                    matchingReads = 1;
+                }
+
+                lastReadTime = now;
+
+                // Accept only after three matching reads.
+                if (matchingReads >= 3) {
+                    lastAcceptedBarcode = decodedText;
+                    candidateBarcode = "";
+                    matchingReads = 0;
+
+                    dotNetHelper.invokeMethodAsync(
+                        "BarcodeDetected",
+                        decodedText
+                    );
                 }
             },
             () => {
-                // Scan failure is normal while camera searches for a barcode.
+                // Normal while searching for a barcode.
             }
         );
     },
@@ -45,12 +66,13 @@ window.barcodeScanner = {
                 await scanner.stop();
                 await scanner.clear();
             } catch {
-                // Scanner may already be stopped.
             }
 
             scanner = null;
         }
 
-        lastValue = "";
+        candidateBarcode = "";
+        matchingReads = 0;
+        lastAcceptedBarcode = "";
     }
 };
