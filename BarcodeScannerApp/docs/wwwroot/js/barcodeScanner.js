@@ -1,35 +1,54 @@
-﻿let controls = null;
+﻿let scanner = null;
 let lastValue = "";
 
 window.barcodeScanner = {
     start: async function (dotNetHelper) {
-        const video = document.getElementById("barcodeVideo");
-        const reader = new ZXingBrowser.BrowserMultiFormatReader();
+        const formats = [
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_93,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.ITF,
+            Html5QrcodeSupportedFormats.CODABAR
+        ];
 
-        controls = await reader.decodeFromConstraints(
+        scanner = new Html5Qrcode("barcodeVideo", {
+            formatsToSupport: formats
+        });
+
+        await scanner.start(
+            { facingMode: "environment" },
             {
-                audio: false,
-                video: {
-                    facingMode: { ideal: "environment" }
+                fps: 15,
+                qrbox: { width: 350, height: 140 },
+                aspectRatio: 1.7778,
+                disableFlip: true
+            },
+            (decodedText) => {
+                if (decodedText !== lastValue) {
+                    lastValue = decodedText;
+                    dotNetHelper.invokeMethodAsync("BarcodeDetected", decodedText);
                 }
             },
-            video,
-            (result) => {
-                if (result) {
-                    const value = result.getText();
-
-                    if (value !== lastValue) {
-                        lastValue = value;
-                        dotNetHelper.invokeMethodAsync("BarcodeDetected", value);
-                    }
-                }
-            });
+            () => {
+                // Scan failure is normal while camera searches for a barcode.
+            }
+        );
     },
 
-    stop: function () {
-        if (controls) {
-            controls.stop();
-            controls = null;
+    stop: async function () {
+        if (scanner) {
+            try {
+                await scanner.stop();
+                await scanner.clear();
+            } catch {
+                // Scanner may already be stopped.
+            }
+
+            scanner = null;
         }
 
         lastValue = "";
