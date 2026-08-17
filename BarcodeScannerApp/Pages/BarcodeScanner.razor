@@ -349,10 +349,6 @@
     {
         barcode = barcode?.Trim() ?? "";
 
-        // -----------------------------------------
-        // EMPTY BARCODE = FAILED
-        // -----------------------------------------
-
         if (string.IsNullOrWhiteSpace(barcode))
         {
             await ScanFailedAsync(
@@ -362,33 +358,40 @@
         }
 
 
-        // -----------------------------------------
+        // =====================================================
         // CHECK DUPLICATE
-        // -----------------------------------------
+        // =====================================================
 
-        bool alreadyExists =
-            scannedItems.Any(x =>
+        var existingItem =
+            scannedItems.FirstOrDefault(x =>
                 string.Equals(
                     x.Barcode,
                     barcode,
                     StringComparison.OrdinalIgnoreCase));
 
 
-        // -----------------------------------------
-        // DUPLICATE BARCODE
-        // -----------------------------------------
+        // =====================================================
+        // REPEAT
+        // =====================================================
 
-        if (alreadyExists)
+        if (existingItem != null)
         {
             message =
-                $"Barcode {barcode} already scanned. Duplicate ignored.";
+                $"Barcode {barcode} already scanned.";
 
-            statusTitle = "REPEAT";
-            statusIcon = "↻";
-            statusClass = "status-repeat";
+            statusTitle =
+                "REPEAT";
+
+            statusIcon =
+                "↻";
+
+            statusClass =
+                "status-repeat";
+
 
             await JS.InvokeVoidAsync(
                 "barcodeScanner.playRepeatSound");
+
 
             StateHasChanged();
 
@@ -396,9 +399,9 @@
         }
 
 
-        // -----------------------------------------
-        // UNIQUE BARCODE
-        // -----------------------------------------
+        // =====================================================
+        // UNIQUE
+        // =====================================================
 
         scannedItems.Insert(
             0,
@@ -413,12 +416,15 @@
         message =
             $"Barcode {barcode} scanned successfully.";
 
-        statusTitle = "SUCCESS";
-        statusIcon = "✓";
-        statusClass = "status-success";
+        statusTitle =
+            "SUCCESS";
 
+        statusIcon =
+            "✓";
 
-        // SUCCESS SOUND
+        statusClass =
+            "status-success";
+
 
         await JS.InvokeVoidAsync(
             "barcodeScanner.playSuccessSound");
