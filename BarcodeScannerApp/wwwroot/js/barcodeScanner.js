@@ -4,16 +4,22 @@
     dotNetReference: null,
 
     // =====================================================
-    // SCANNER CONTROL
+    // SETTINGS
     // =====================================================
 
+    cooldownTime: 3000,       // 3 seconds
+    lostBarcodeTime: 700,     // barcode must disappear
     isProcessing: false,
 
-    // 5 second waiting period after every accepted scan
-    scanCooldown: 5000,
-
     lastBarcode: null,
-    lastScanTime: 0,
+
+    barcodeVisible: false,
+    lastSeenTime: 0,
+
+    readyForNewBarcode: true,
+
+    cooldownTimer: null,
+    lostTimer: null,
 
 
     // =====================================================
@@ -25,36 +31,34 @@
         this.dotNetReference = dotNetReference;
 
         this.isProcessing = false;
+
         this.lastBarcode = null;
-        this.lastScanTime = 0;
+
+        this.barcodeVisible = false;
+
+        this.lastSeenTime = 0;
+
+        this.readyForNewBarcode = true;
 
 
         try {
 
-            if (typeof Html5Qrcode === "undefined") {
-
-                await this.dotNetReference.invokeMethodAsync(
-                    "ScannerError",
-                    "Barcode scanner library not loaded."
-                );
-
-                return;
-            }
-
-
             // -------------------------------------------------
-            // CLEAN OLD SCANNER
+            // REMOVE OLD SCANNER
             // -------------------------------------------------
 
             if (this.scanner) {
 
                 try {
+
                     if (this.scanner.isScanning) {
                         await this.scanner.stop();
                     }
+
                 }
                 catch (e) {
                 }
+
 
                 try {
                     this.scanner.clear();
@@ -62,7 +66,23 @@
                 catch (e) {
                 }
 
+
                 this.scanner = null;
+            }
+
+
+            // -------------------------------------------------
+            // CHECK LIBRARY
+            // -------------------------------------------------
+
+            if (typeof Html5Qrcode === "undefined") {
+
+                await this.dotNetReference.invokeMethodAsync(
+                    "ScannerError",
+                    "Barcode scanner library is not loaded."
+                );
+
+                return;
             }
 
 
@@ -73,11 +93,8 @@
             this.scanner = new Html5Qrcode(
                 "barcodeCamera",
                 {
-                    // Use browser native BarcodeDetector
-                    // whenever available
                     useBarCodeDetectorIfSupported: true,
 
-                    // Only enable barcode formats you actually use
                     formatsToSupport: [
 
                         Html5QrcodeSupportedFormats.CODE_128,
@@ -109,25 +126,18 @@
 
             const config = {
 
-                // Don't scan 30-60 frames/sec.
-                // 5 is enough for inventory scanning.
+                // 5 frames/sec is enough for inventory scanning
                 fps: 5,
 
-
-                // IMPORTANT:
-                // Your barcode is horizontal/rectangular.
-                // Don't use a square scan area.
+                // Your labels have horizontal 1D barcodes
                 qrbox: {
                     width: 320,
-                    height: 140
+                    height: 110
                 },
-
 
                 aspectRatio: 16 / 9,
 
-
                 disableFlip: true
-
             };
 
 
@@ -138,21 +148,19 @@
             await this.scanner.start(
 
                 {
-                    facingMode: {
-                        exact: "environment"
-                    }
+                    facingMode: "environment"
                 },
 
                 config,
 
 
                 // =================================================
-                // SUCCESS CALLBACK
+                // BARCODE FOUND
                 // =================================================
 
-                async (decodedText, decodedResult) => {
+                async (decodedText) => {
 
-                    await this.handleBarcode(
+                    await this.handleDetection(
                         decodedText
                     );
 
@@ -160,17 +168,13 @@
 
 
                 // =================================================
-                // ERROR CALLBACK
+                // BARCODE NOT FOUND
                 // =================================================
 
                 (errorMessage) => {
 
-                    // DO NOTHING HERE.
+                    this.handleBarcodeLost();
 
-                    // This callback fires continuously while
-                    // camera is searching for a barcode.
-
-                    // Do NOT play FAILED sound here.
                 }
 
             );
@@ -179,7 +183,7 @@
         catch (error) {
 
             console.error(
-                "Barcode scanner start error:",
+                "Scanner start error:",
                 error
             );
 
@@ -196,22 +200,49 @@
 
 
     // =====================================================
-    // HANDLE BARCODE
+    // BARCODE DETECTED
     // =====================================================
 
-    handleBarcode: async function (decodedText) {
+    handleDetection: async function (decodedText) {
 
         if (!decodedText) {
             return;
         }
 
 
+        const barcode =
+            decodedText.trim();
+
+
+        if (!barcode) {
+            return;
+        }
+
+
+        // Barcode is currently visible
+
+        this.barcodeVisible = true;
+
+        this.lastSeenTime = Date.now();
+
+
         // -------------------------------------------------
-        // IMPORTANT LOCK
+        // CANCEL "BARCODE LOST" TIMER
         // -------------------------------------------------
 
-        // If one barcode is already being processed,
-        // completely ignore all additional detections.
+        if (this.lostTimer) {
+
+            clearTimeout(
+                this.lostTimer
+            );
+
+            this.lostTimer = null;
+        }
+
+
+        // -------------------------------------------------
+        // CAMERA IS IN 3 SECOND COOLDOWN
+        // -------------------------------------------------
 
         if (this.isProcessing) {
 
@@ -219,31 +250,33 @@
         }
 
 
-        const barcode =
-            decodedText
-                .trim();
+        // -------------------------------------------------
+        // SAME PHYSICAL BARCODE STILL IN CAMERA
+        // -------------------------------------------------
 
+        if (
+            this.lastBarcode === barcode &&
+            !this.readyForNewBarcode
+        ) {
 
-        if (!barcode) {
+            // IMPORTANT:
+            //
+            // Do NOT scan again.
+            //
+            // Do NOT play repeat sound again.
+            //
+            // The user is probably still holding
+            // the same physical barcode.
 
             return;
         }
 
 
         // -------------------------------------------------
-        // TIME CHECK
+        // READY FOR NEW BARCODE
         // -------------------------------------------------
 
-        const now =
-            Date.now();
-
-
-        // Don't accept anything during cooldown
-
-        if (
-            now - this.lastScanTime <
-            this.scanCooldown
-        ) {
+        if (!this.readyForNewBarcode) {
 
             return;
         }
@@ -255,12 +288,9 @@
 
         this.isProcessing = true;
 
+        this.readyForNewBarcode = false;
 
-        this.lastScanTime =
-            now;
-
-        this.lastBarcode =
-            barcode;
+        this.lastBarcode = barcode;
 
 
         // -------------------------------------------------
@@ -269,13 +299,7 @@
 
         try {
 
-            if (
-                this.scanner &&
-                this.scanner.isScanning
-            ) {
-
-                // FALSE = keep camera video running
-                // but stop barcode decoding
+            if (this.scanner) {
 
                 this.scanner.pause(false);
 
@@ -285,7 +309,7 @@
         catch (error) {
 
             console.log(
-                "Pause scanner error:",
+                "Pause error:",
                 error
             );
 
@@ -293,7 +317,7 @@
 
 
         // -------------------------------------------------
-        // SEND TO BLAZOR
+        // SEND BARCODE TO BLAZOR
         // -------------------------------------------------
 
         try {
@@ -307,7 +331,7 @@
         catch (error) {
 
             console.error(
-                "Blazor barcode error:",
+                "Blazor barcode callback error:",
                 error
             );
 
@@ -315,39 +339,37 @@
 
 
         // -------------------------------------------------
-        // WAIT 5 SECONDS
+        // 3 SECOND COOLDOWN
         // -------------------------------------------------
 
-        setTimeout(
-            () => {
+        this.cooldownTimer =
+            setTimeout(
 
-                this.resumeScanner();
+                () => {
 
-            },
+                    this.finishCooldown();
 
-            this.scanCooldown
+                },
 
-        );
+                this.cooldownTime
+
+            );
 
     },
 
 
     // =====================================================
-    // RESUME SCANNER
+    // AFTER 3 SECOND COOLDOWN
     // =====================================================
 
-    resumeScanner: function () {
+    finishCooldown: function () {
+
+        this.isProcessing = false;
+
 
         try {
 
-            if (
-                this.scanner &&
-                !this.scanner.isScanning
-            ) {
-
-                // Some versions expose state through
-                // pause/resume rather than isScanning.
-                // Try resume directly.
+            if (this.scanner) {
 
                 this.scanner.resume();
 
@@ -357,15 +379,80 @@
         catch (error) {
 
             console.log(
-                "Resume scanner error:",
+                "Resume error:",
                 error
             );
 
         }
 
 
-        this.isProcessing =
-            false;
+        // -------------------------------------------------
+        // IMPORTANT
+        //
+        // DO NOT immediately make it ready.
+        //
+        // We need the previous barcode to disappear.
+        // -------------------------------------------------
+
+        if (!this.barcodeVisible) {
+
+            this.readyForNewBarcode = true;
+
+            this.lastBarcode = null;
+
+        }
+
+    },
+
+
+    // =====================================================
+    // BARCODE LOST
+    // =====================================================
+
+    handleBarcodeLost: function () {
+
+        this.barcodeVisible = false;
+
+
+        // -------------------------------------------------
+        // If we are still in cooldown, don't do anything.
+        // -------------------------------------------------
+
+        if (this.isProcessing) {
+            return;
+        }
+
+
+        // -------------------------------------------------
+        // Wait a little to make sure barcode is actually gone
+        // -------------------------------------------------
+
+        if (this.lostTimer) {
+            return;
+        }
+
+
+        this.lostTimer =
+            setTimeout(
+
+                () => {
+
+                    this.lostTimer = null;
+
+
+                    if (!this.barcodeVisible) {
+
+                        this.readyForNewBarcode = true;
+
+                        this.lastBarcode = null;
+
+                    }
+
+                },
+
+                this.lostBarcodeTime
+
+            );
 
     },
 
@@ -376,8 +463,29 @@
 
     stop: async function () {
 
-        this.isProcessing =
-            true;
+        this.isProcessing = true;
+
+        this.readyForNewBarcode = false;
+
+
+        if (this.cooldownTimer) {
+
+            clearTimeout(
+                this.cooldownTimer
+            );
+
+            this.cooldownTimer = null;
+        }
+
+
+        if (this.lostTimer) {
+
+            clearTimeout(
+                this.lostTimer
+            );
+
+            this.lostTimer = null;
+        }
 
 
         try {
@@ -406,8 +514,7 @@
                 }
 
 
-                this.scanner =
-                    null;
+                this.scanner = null;
 
             }
 
@@ -434,6 +541,7 @@
             document.getElementById(
                 "hardwareBarcodeInput"
             );
+
 
         if (input) {
 
@@ -489,7 +597,7 @@
 
 
     // =====================================================
-    // SOUND
+    // SOUND ENGINE
     // =====================================================
 
     playTone: function (
@@ -502,6 +610,7 @@
             const AudioContext =
                 window.AudioContext ||
                 window.webkitAudioContext;
+
 
             if (!AudioContext) {
                 return;
@@ -556,10 +665,8 @@
 
 
             oscillator.stop(
-
                 audioContext.currentTime +
                 duration / 1000
-
             );
 
         }
