@@ -7,19 +7,34 @@
     // SETTINGS
     // =====================================================
 
-    cooldownTime: 3000,       // 3 seconds
-    lostBarcodeTime: 700,     // barcode must disappear
+    // User wants continuous scanning
+    // but 3 seconds between accepted scans
+    cooldownTime: 3000,
+
+    // How many times the SAME decoded value must appear
+    // before we trust it
+    requiredConfirmations: 3,
+
+    // Time window in which confirmations are collected
+    confirmationWindow: 1200,
+
+    // =====================================================
+    // STATE
+    // =====================================================
+
     isProcessing: false,
 
-    lastBarcode: null,
+    lastAcceptedBarcode: null,
 
-    barcodeVisible: false,
-    lastSeenTime: 0,
+    candidateBarcode: null,
 
-    readyForNewBarcode: true,
+    candidateCount: 0,
+
+    candidateStartTime: 0,
+
+    confirmationTimer: null,
 
     cooldownTimer: null,
-    lostTimer: null,
 
 
     // =====================================================
@@ -28,32 +43,43 @@
 
     start: async function (dotNetReference) {
 
-        this.dotNetReference = dotNetReference;
+        this.dotNetReference =
+            dotNetReference;
 
-        this.isProcessing = false;
 
-        this.lastBarcode = null;
-
-        this.barcodeVisible = false;
-
-        this.lastSeenTime = 0;
-
-        this.readyForNewBarcode = true;
+        this.resetState();
 
 
         try {
 
-            // -------------------------------------------------
+            // ---------------------------------------------
+            // CHECK LIBRARY
+            // ---------------------------------------------
+
+            if (
+                typeof Html5Qrcode ===
+                "undefined"
+            ) {
+
+                await this.dotNetReference
+                    .invokeMethodAsync(
+                        "ScannerError",
+                        "Barcode scanner library is not loaded."
+                    );
+
+                return;
+            }
+
+
+            // ---------------------------------------------
             // REMOVE OLD SCANNER
-            // -------------------------------------------------
+            // ---------------------------------------------
 
             if (this.scanner) {
 
                 try {
 
-                    if (this.scanner.isScanning) {
-                        await this.scanner.stop();
-                    }
+                    await this.scanner.stop();
 
                 }
                 catch (e) {
@@ -61,89 +87,81 @@
 
 
                 try {
+
                     this.scanner.clear();
+
                 }
                 catch (e) {
                 }
 
 
                 this.scanner = null;
+
             }
 
 
-            // -------------------------------------------------
-            // CHECK LIBRARY
-            // -------------------------------------------------
+            // ---------------------------------------------
+            // CREATE SCANNER
+            // ---------------------------------------------
 
-            if (typeof Html5Qrcode === "undefined") {
+            this.scanner =
+                new Html5Qrcode(
+                    "barcodeCamera",
+                    {
+                        useBarCodeDetectorIfSupported: true,
 
-                await this.dotNetReference.invokeMethodAsync(
-                    "ScannerError",
-                    "Barcode scanner library is not loaded."
+                        formatsToSupport: [
+
+                            Html5QrcodeSupportedFormats.CODE_128,
+
+                            Html5QrcodeSupportedFormats.CODE_39,
+
+                            Html5QrcodeSupportedFormats.CODE_93,
+
+                            Html5QrcodeSupportedFormats.EAN_13,
+
+                            Html5QrcodeSupportedFormats.EAN_8,
+
+                            Html5QrcodeSupportedFormats.UPC_A,
+
+                            Html5QrcodeSupportedFormats.UPC_E,
+
+                            Html5QrcodeSupportedFormats.ITF,
+
+                            Html5QrcodeSupportedFormats.CODABAR
+
+                        ]
+                    }
                 );
 
-                return;
-            }
 
-
-            // -------------------------------------------------
-            // CREATE SCANNER
-            // -------------------------------------------------
-
-            this.scanner = new Html5Qrcode(
-                "barcodeCamera",
-                {
-                    useBarCodeDetectorIfSupported: true,
-
-                    formatsToSupport: [
-
-                        Html5QrcodeSupportedFormats.CODE_128,
-
-                        Html5QrcodeSupportedFormats.CODE_39,
-
-                        Html5QrcodeSupportedFormats.CODE_93,
-
-                        Html5QrcodeSupportedFormats.EAN_13,
-
-                        Html5QrcodeSupportedFormats.EAN_8,
-
-                        Html5QrcodeSupportedFormats.UPC_A,
-
-                        Html5QrcodeSupportedFormats.UPC_E,
-
-                        Html5QrcodeSupportedFormats.ITF,
-
-                        Html5QrcodeSupportedFormats.CODABAR
-
-                    ]
-                }
-            );
-
-
-            // -------------------------------------------------
+            // ---------------------------------------------
             // CAMERA CONFIG
-            // -------------------------------------------------
+            // ---------------------------------------------
 
             const config = {
 
-                // 5 frames/sec is enough for inventory scanning
+                // Scan 5 times per second
                 fps: 5,
 
-                // Your labels have horizontal 1D barcodes
+                // IMPORTANT:
+                // Only one barcode should be inside this box
+
                 qrbox: {
                     width: 320,
-                    height: 110
+                    height: 100
                 },
 
                 aspectRatio: 16 / 9,
 
                 disableFlip: true
+
             };
 
 
-            // -------------------------------------------------
-            // START CAMERA
-            // -------------------------------------------------
+            // ---------------------------------------------
+            // START
+            // ---------------------------------------------
 
             await this.scanner.start(
 
@@ -154,26 +172,31 @@
                 config,
 
 
-                // =================================================
-                // BARCODE FOUND
-                // =================================================
+                // =========================================
+                // SUCCESS CALLBACK
+                // =========================================
 
                 async (decodedText) => {
 
-                    await this.handleDetection(
+                    await this.processDetection(
                         decodedText
                     );
 
                 },
 
 
-                // =================================================
-                // BARCODE NOT FOUND
-                // =================================================
+                // =========================================
+                // ERROR CALLBACK
+                // =========================================
 
                 (errorMessage) => {
 
-                    this.handleBarcodeLost();
+                    // IMPORTANT:
+                    //
+                    // DO NOT call FAILED here.
+                    //
+                    // This callback happens constantly
+                    // while the camera is looking for a barcode.
 
                 }
 
@@ -188,11 +211,12 @@
             );
 
 
-            await this.dotNetReference.invokeMethodAsync(
-                "ScannerError",
-                error?.message ||
-                "Unable to start camera."
-            );
+            await this.dotNetReference
+                .invokeMethodAsync(
+                    "ScannerError",
+                    error?.message ||
+                    "Unable to start camera."
+                );
 
         }
 
@@ -200,10 +224,12 @@
 
 
     // =====================================================
-    // BARCODE DETECTED
+    // PROCESS EVERY DETECTION
     // =====================================================
 
-    handleDetection: async function (decodedText) {
+    processDetection: async function (
+        decodedText
+    ) {
 
         if (!decodedText) {
             return;
@@ -219,89 +245,171 @@
         }
 
 
-        // Barcode is currently visible
-
-        this.barcodeVisible = true;
-
-        this.lastSeenTime = Date.now();
-
-
-        // -------------------------------------------------
-        // CANCEL "BARCODE LOST" TIMER
-        // -------------------------------------------------
-
-        if (this.lostTimer) {
-
-            clearTimeout(
-                this.lostTimer
-            );
-
-            this.lostTimer = null;
-        }
-
-
-        // -------------------------------------------------
-        // CAMERA IS IN 3 SECOND COOLDOWN
-        // -------------------------------------------------
+        // =================================================
+        // IF CURRENTLY PROCESSING
+        // =================================================
 
         if (this.isProcessing) {
 
             return;
+
         }
 
 
-        // -------------------------------------------------
-        // SAME PHYSICAL BARCODE STILL IN CAMERA
-        // -------------------------------------------------
+        // =================================================
+        // SAME AS CURRENT CANDIDATE
+        // =================================================
 
         if (
-            this.lastBarcode === barcode &&
-            !this.readyForNewBarcode
+            this.candidateBarcode ===
+            barcode
         ) {
 
-            // IMPORTANT:
-            //
-            // Do NOT scan again.
-            //
-            // Do NOT play repeat sound again.
-            //
-            // The user is probably still holding
-            // the same physical barcode.
+            this.candidateCount++;
+
+
+            // ---------------------------------------------
+            // ENOUGH CONFIRMATIONS
+            // ---------------------------------------------
+
+            if (
+                this.candidateCount >=
+                this.requiredConfirmations
+            ) {
+
+                await this.acceptBarcode(
+                    barcode
+                );
+
+            }
+
 
             return;
         }
 
 
-        // -------------------------------------------------
-        // READY FOR NEW BARCODE
-        // -------------------------------------------------
+        // =================================================
+        // DIFFERENT RESULT
+        // =================================================
 
-        if (!this.readyForNewBarcode) {
+        // Example:
+        //
+        // First:
+        // 37000123
+        //
+        // Second:
+        // 37000129
+        //
+        // Third:
+        // 37000121
+        //
+        // This means the camera is not confident.
+        //
+        // Start confirmation again.
 
-            return;
+        this.candidateBarcode =
+            barcode;
+
+        this.candidateCount = 1;
+
+        this.candidateStartTime =
+            Date.now();
+
+
+        // ---------------------------------------------
+        // CANCEL OLD TIMER
+        // ---------------------------------------------
+
+        if (this.confirmationTimer) {
+
+            clearTimeout(
+                this.confirmationTimer
+            );
+
         }
 
 
-        // -------------------------------------------------
-        // LOCK IMMEDIATELY
-        // -------------------------------------------------
+        // ---------------------------------------------
+        // RESET CANDIDATE AFTER WINDOW
+        // ---------------------------------------------
+
+        this.confirmationTimer =
+            setTimeout(
+
+                () => {
+
+                    this.candidateBarcode =
+                        null;
+
+                    this.candidateCount =
+                        0;
+
+                },
+
+                this.confirmationWindow
+
+            );
+
+    },
+
+
+    // =====================================================
+    // ACCEPT CONFIRMED BARCODE
+    // =====================================================
+
+    acceptBarcode: async function (
+        barcode
+    ) {
+
+        // ---------------------------------------------
+        // LOCK
+        // ---------------------------------------------
 
         this.isProcessing = true;
 
-        this.readyForNewBarcode = false;
 
-        this.lastBarcode = barcode;
+        // ---------------------------------------------
+        // CLEAR CANDIDATE
+        // ---------------------------------------------
+
+        this.candidateBarcode =
+            null;
+
+        this.candidateCount =
+            0;
 
 
-        // -------------------------------------------------
-        // PAUSE DECODER
-        // -------------------------------------------------
+        if (this.confirmationTimer) {
+
+            clearTimeout(
+                this.confirmationTimer
+            );
+
+            this.confirmationTimer =
+                null;
+
+        }
+
+
+        // ---------------------------------------------
+        // REMEMBER LAST ACCEPTED
+        // ---------------------------------------------
+
+        this.lastAcceptedBarcode =
+            barcode;
+
+
+        // ---------------------------------------------
+        // PAUSE DECODING
+        // ---------------------------------------------
 
         try {
 
             if (this.scanner) {
 
-                this.scanner.pause(false);
+                this.scanner.pause(
+                    false
+                );
 
             }
 
@@ -309,45 +417,46 @@
         catch (error) {
 
             console.log(
-                "Pause error:",
+                "Scanner pause error:",
                 error
             );
 
         }
 
 
-        // -------------------------------------------------
-        // SEND BARCODE TO BLAZOR
-        // -------------------------------------------------
+        // ---------------------------------------------
+        // SEND TO BLAZOR
+        // ---------------------------------------------
 
         try {
 
-            await this.dotNetReference.invokeMethodAsync(
-                "BarcodeDetected",
-                barcode
-            );
+            await this.dotNetReference
+                .invokeMethodAsync(
+                    "BarcodeDetected",
+                    barcode
+                );
 
         }
         catch (error) {
 
             console.error(
-                "Blazor barcode callback error:",
+                "Barcode callback error:",
                 error
             );
 
         }
 
 
-        // -------------------------------------------------
-        // 3 SECOND COOLDOWN
-        // -------------------------------------------------
+        // ---------------------------------------------
+        // WAIT 3 SECONDS
+        // ---------------------------------------------
 
         this.cooldownTimer =
             setTimeout(
 
                 () => {
 
-                    this.finishCooldown();
+                    this.resumeScanner();
 
                 },
 
@@ -359,13 +468,10 @@
 
 
     // =====================================================
-    // AFTER 3 SECOND COOLDOWN
+    // RESUME AFTER 3 SECONDS
     // =====================================================
 
-    finishCooldown: function () {
-
-        this.isProcessing = false;
-
+    resumeScanner: function () {
 
         try {
 
@@ -379,93 +485,66 @@
         catch (error) {
 
             console.log(
-                "Resume error:",
+                "Scanner resume error:",
                 error
             );
 
         }
 
 
-        // -------------------------------------------------
-        // IMPORTANT
-        //
-        // DO NOT immediately make it ready.
-        //
-        // We need the previous barcode to disappear.
-        // -------------------------------------------------
+        // ---------------------------------------------
+        // READY FOR NEW CONFIRMATION
+        // ---------------------------------------------
 
-        if (!this.barcodeVisible) {
+        this.isProcessing =
+            false;
 
-            this.readyForNewBarcode = true;
 
-            this.lastBarcode = null;
+        this.candidateBarcode =
+            null;
 
-        }
+        this.candidateCount =
+            0;
+
+
+        this.candidateStartTime =
+            0;
 
     },
 
 
     // =====================================================
-    // BARCODE LOST
+    // RESET
     // =====================================================
 
-    handleBarcodeLost: function () {
+    resetState: function () {
 
-        this.barcodeVisible = false;
+        this.isProcessing =
+            false;
 
+        this.lastAcceptedBarcode =
+            null;
 
-        // -------------------------------------------------
-        // If we are still in cooldown, don't do anything.
-        // -------------------------------------------------
+        this.candidateBarcode =
+            null;
 
-        if (this.isProcessing) {
-            return;
-        }
+        this.candidateCount =
+            0;
 
-
-        // -------------------------------------------------
-        // Wait a little to make sure barcode is actually gone
-        // -------------------------------------------------
-
-        if (this.lostTimer) {
-            return;
-        }
+        this.candidateStartTime =
+            0;
 
 
-        this.lostTimer =
-            setTimeout(
+        if (this.confirmationTimer) {
 
-                () => {
-
-                    this.lostTimer = null;
-
-
-                    if (!this.barcodeVisible) {
-
-                        this.readyForNewBarcode = true;
-
-                        this.lastBarcode = null;
-
-                    }
-
-                },
-
-                this.lostBarcodeTime
-
+            clearTimeout(
+                this.confirmationTimer
             );
 
-    },
+            this.confirmationTimer =
+                null;
 
-
-    // =====================================================
-    // STOP CAMERA
-    // =====================================================
-
-    stop: async function () {
-
-        this.isProcessing = true;
-
-        this.readyForNewBarcode = false;
+        }
 
 
         if (this.cooldownTimer) {
@@ -474,18 +553,24 @@
                 this.cooldownTimer
             );
 
-            this.cooldownTimer = null;
+            this.cooldownTimer =
+                null;
+
         }
 
+    },
 
-        if (this.lostTimer) {
 
-            clearTimeout(
-                this.lostTimer
-            );
+    // =====================================================
+    // STOP
+    // =====================================================
 
-            this.lostTimer = null;
-        }
+    stop: async function () {
+
+        this.resetState();
+
+        this.isProcessing =
+            true;
 
 
         try {
@@ -494,11 +579,7 @@
 
                 try {
 
-                    if (this.scanner.isScanning) {
-
-                        await this.scanner.stop();
-
-                    }
+                    await this.scanner.stop();
 
                 }
                 catch (e) {
@@ -514,7 +595,8 @@
                 }
 
 
-                this.scanner = null;
+                this.scanner =
+                    null;
 
             }
 
@@ -532,7 +614,7 @@
 
 
     // =====================================================
-    // HARDWARE SCANNER
+    // HARDWARE INPUT
     // =====================================================
 
     focusHardwareInput: function () {
@@ -597,7 +679,7 @@
 
 
     // =====================================================
-    // SOUND ENGINE
+    // SOUND
     // =====================================================
 
     playTone: function (
@@ -655,7 +737,6 @@
 
             gainNode.gain.exponentialRampToValueAtTime(
                 0.01,
-
                 audioContext.currentTime +
                 duration / 1000
             );
